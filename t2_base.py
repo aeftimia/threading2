@@ -9,6 +9,11 @@ else:
     from threading import Condition as _Condition
     from threading import Timer as _Timer
 
+if sys.version_info < (3, 0):
+    from Queue import deque
+else:
+    from queue import deque
+
 __all__ = ["active_count","Condition","current_thread",
            "enumerate","Event","local","Lock","RLock",
            "Semaphore","BoundedSemaphore","Thread","Timer","SHLock",
@@ -157,6 +162,27 @@ class Condition(_Condition):
         finally:
             self._acquire_restore(saved_state)
 
+    #return list of bools to to indicate whether notify actually did anything
+    def notify(self, n=1):
+        if not self._is_owned():
+            raise RuntimeError("cannot notify on un-acquired lock")
+        __waiters = self._waiters
+        waiters = __waiters[:n]
+        retval=[]
+        if not waiters:
+            if __debug__:
+                self._note("%s.notify(): no waiters", self)
+            return retval
+        self._note("%s.notify(): notifying %d waiter%s", self, n,
+                   n!=1 and "s" or "")
+        for waiter in waiters:
+            waiter.release()
+            try:
+                __waiters.remove(waiter)
+                retval.append(True)
+            except ValueError:
+                retval.append(False)
+        return retval
 
 class Semaphore(_ContextManagerMixin):
     """Re-implemented Semaphore class.
@@ -400,160 +426,92 @@ class Thread(Thread):
         return affinity
 
 
+
 class SHLock(object):
     """Shareable lock class.
 
-    This functions just like an RLock except that you can also request a
-    "shared" lock mode.  Shared locks can co-exist with other shared locks
-    but block exclusive locks.  You might also know this as a read/write lock.
+This functions just like an RLock except that you can also request a
+"shared" lock mode. Shared locks can co-exist with other shared locks
+but block exclusive locks. You might also know this as a read/write lock.
 
-    Currently attempting to upgrade or downgrade between shared and exclusive
-    locks will cause a deadlock.  This restriction may go away in future.
-    """
+Currently attempting to upgrade or downgrade between shared and exclusive
+locks will cause a deadlock. This restriction may go away in future.
+"""
 
     _LockClass = Lock
     _ConditionClass = Condition
 
-    def __init__(self, reentrant=True):
+    def __init__(self):
         self._lock = self._LockClass()
-        #  When a shared lock is held, is_shared will give the cumulative
-        #  number of locks and _shared_owners maps each owning thread to
-        #  the number of locks is holds.
-        self.is_shared = 0
-        self._shared_owners = {}
-        #  When an exclusive lock is held, is_exclusive will give the number
-        #  of locks held and _exclusive_owner will give the owning thread
-        self.is_exclusive = 0
-        self._exclusive_owner = None
-        #  When someonce is forced to wait for a lock, they add themselves
-        #  to one of these queues along with a "waiter" condition that 
-        #  is used to wake them up.
-        self._shared_queue = []
-        self._exclusive_queue = []
-        #  This is for recycling waiter objects.
+        self._acquire_stack=[]
+        self._waitlist_queue=deque()
+        # This is for recycling waiter objects.
         self._free_waiters = []
-
-        self._reentrant=reentrant
-
-    def __enter__(self):
-        return self
-
-    def __call__(self, *args, **kwargs):
-        self.acquire(*args, **kwargs)
-        return self
-
-    def __exit__(self, *args, **kwargs):
-        self.release() 
-
-    def acquire(self,blocking=True,timeout=None,shared=False):
-        """Acquire the lock in shared or exclusive mode."""
-        with self._lock:
-            if shared:
-                self._acquire_shared(blocking,timeout)
-            else:
-                self._acquire_exclusive(blocking,timeout)
-            assert not (self.is_shared and self.is_exclusive)
 
     def release(self):
         """Release the lock."""
-        #  This decrements the appropriate lock counters, and if the lock
-        #  becomes free, it looks for a queued thread to hand it off to.
-        #  By doing the handoff here we ensure fairness.
+        # This decrements the appropriate lock counters, and if the lock
+        # becomes free, it looks for a queued thread to hand it off to.
+        # By doing the handoff here we ensure fairness.
         me = current_thread()
         with self._lock:
-            if self.is_exclusive:
-                if self._exclusive_owner is not me:
-                    raise RuntimeError("release() called on unheld lock")
-                self.is_exclusive -= 1
-                if not self.is_exclusive:
-                    self._exclusive_owner = None
-                    #  If there are waiting shared locks, issue it to them
-                    #  all and then wake everyone up.
-                    if self._shared_queue:
-                        for (thread,waiter) in self._shared_queue:
-                            self.is_shared += 1
-                            self._shared_owners[thread] = 1
-                            waiter.notify()
-                        del self._shared_queue[:]
-                    #  Otherwise, if there are waiting exclusive locks,
-                    #  they get first dibbs on the lock.
-                    elif self._exclusive_queue:
-                        (thread,waiter) = self._exclusive_queue.pop(0)
-                        self._exclusive_owner = thread
-                        self.is_exclusive += 1
-                        waiter.notify()
-            elif self.is_shared:
-                try:
-                    self._shared_owners[me] -= 1
-                    if self._shared_owners[me] == 0:
-                        del self._shared_owners[me]
-                except KeyError:
-                    raise RuntimeError("release() called on unheld lock")
-                self.is_shared -= 1
-                if not self.is_shared:
-                    #  If there are waiting exclusive locks,
-                    #  they get first dibbs on the lock.
-                    if self._exclusive_queue:
-                        (thread,waiter) = self._exclusive_queue.pop(0)
-                        self._exclusive_owner = thread
-                        self.is_exclusive += 1
-                        waiter.notify()
-                    else:
-                        assert not self._shared_queue
-            else:
+            waiters=[]
+            found_me=False
+            all_shared=True
+            index=0
+            while index < len(self._acquire_stack):
+                #go through acquire_stack
+                #until we find the current thread
+                (thread, is_shared)=self._acquire_stack[index]
+                if thread is me and not found_me:
+                    self._acquire_stack.pop(index)
+                    found_me=True
+                elif is_shared:
+                    all_shared=False
+                    index+=1
+                else:
+                    index+=1
+                    
+            if not found_me:
                 raise RuntimeError("release() called on unheld lock")
 
-    def _acquire_shared(self,blocking=True,timeout=None):
+            if all_shared:
+                while self._waitlist_queue:
+                    (thread, waiter, shared)=self._waitlist_queue.popleft()
+                    if shared or not self._acquire_stack:
+                        if waiter.notify():
+                            self._acquire_stack.insert(0, (me, shared))
+                            self._return_waiter(waiter)
+                    else:
+                        #stop on exlusive lock
+                        #if the lock is now shared
+                        break
+                        
+    def acquire(self, blocking=True, timeout=None, shared=False):
         me = current_thread()
-        #  Each case: acquiring a lock we already hold.
-        if self.is_shared and me in self._shared_owners:
-            self.is_shared += 1
-            self._shared_owners[me] += 1
-            return True
-        #  If the lock is already spoken for by an exclusive, add us
-        #  to the shared queue and it will give us the lock eventually.
-        if self.is_exclusive or self._exclusive_queue:
-            if self._exclusive_owner is me:
-                raise RuntimeError("can't downgrade SHLock object")
-            if not blocking:
+        with self._lock:
+            all_shared=True
+            for (thread, is_shared) in self._acquire_stack:
+                #the lock has been acquired
+                #in an exclusive state
+                #by another thread
+                if is_shared is not True and thread is not me:
+                    all_shared=False
+                    break
+            if all_shared:
+                self._acquire_stack.insert(0, (me, shared))
+                return True
+            elif not blocking:
                 return False
-            waiter = self._take_waiter()
-            try:
-                self._shared_queue.append((me,waiter))
-                if not waiter.wait(timeout=timeout):
-                    self._shared_queue.remove((me,waiter))
-                    return False
-                assert not self.is_exclusive
-            finally:
-                self._return_waiter(waiter)
-        else:
-            self.is_shared += 1
-            self._shared_owners[me] = 1
 
-    def _acquire_exclusive(self,blocking=True,timeout=None):
-        me = current_thread()
-        #  Each case: acquiring a lock we already hold.
-        if self._exclusive_owner is me and self._reentrant:
-            assert self.is_exclusive
-            self.is_exclusive += 1
-            return True
-        #  If the lock is already spoken for, add us to the exclusive queue.
-        #  This will eventually give us the lock when it's our turn.
-        if self.is_shared or self.is_exclusive:
-            if not blocking:
+            #if it is blocking, use the waitlist
+            waiter = self._take_waiter()
+            self._waitlist.append((thread, waiter, shared))
+            if not waiter.wait(timeout=timeout):
+                self._waitlist.remove((thread, waiter, shared))
                 return False
-            waiter = self._take_waiter()
-            try:
-                self._exclusive_queue.append((me,waiter))
-                if not waiter.wait(timeout=timeout):
-                    self._exclusive_queue.remove((me,waiter))
-                    return False
-            finally:
-                self._return_waiter(waiter)
-        else:
-            self._exclusive_owner = me
-            self.is_exclusive += 1
-
+            return True
+            
     def _take_waiter(self):
         try:
             return self._free_waiters.pop()
@@ -562,7 +520,6 @@ class SHLock(object):
 
     def _return_waiter(self,waiter):
         self._free_waiters.append(waiter)
-
 
 
 #  Utilities for handling CPU affinity

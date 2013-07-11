@@ -59,12 +59,13 @@ except ImportError:
     from threading2.t2_base import *
     del sys
 
+from threading2.thread_safe import thread_safe, UnacquiredLock
 
-__all__ = ["active_count","activeCount","Condition","current_thread",
+__all__ = ["active_count","Condition","current_thread",
            "currentThread","enumerate","Event","local","Lock","RLock",
            "Semaphore","BoundedSemaphore","Thread","ThreadGroup","Timer",
            "SHLock","setprofile","settrace","stack_size","group_local",
-           "CPUSet","system_affinity","process_affinity"]
+           "CPUSet","system_affinity","process_affinity", "thread_safe", "UnacquiredLock"]
 
 
 class ThreadGroup(object):
