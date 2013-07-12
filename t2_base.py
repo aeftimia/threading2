@@ -1,4 +1,5 @@
 import threading3
+enumerate_=enumerate
 from threading import *
 from threading import _RLock, _allocate_lock
 
@@ -407,9 +408,9 @@ locks will cause a deadlock. This restriction may go away in future.
 """
 
     def __init__(self):
-        self._wait_lock = Lock()
+        self._lock = Lock()
         self._acquire_stack=[]
-        self._waiter=Condition(self._wait_lock)
+        self._waiter=Condition(self._lock)
         self._wait_queue=deque()
 
     def __enter__(self):
@@ -430,41 +431,27 @@ locks will cause a deadlock. This restriction may go away in future.
         # becomes free, it looks for a queued thread to hand it off to.
         # By doing the handoff here we ensure fairness.
         me = current_thread().ident
-        with self._wait_lock:
+        with self._lock:
             found_me=False
-            all_shared=True
-            index=0
-            while index < len(self._acquire_stack):
+            for (index, (thread, _)) in enumerate_(self._acquire_stack):
                 #go through acquire_stack
                 #until we find the current thread
-                (thread, is_shared)=self._acquire_stack[index]
-                if thread is me and not found_me:
+                if thread is me:
                     self._acquire_stack.pop(index)
                     found_me=True
-                else:
-                    all_shared&=is_shared
-                    index+=1
+                    break
                     
             if not found_me:
                 raise RuntimeError("release() called on unheld lock")
              
-            if all_shared and self._wait_queue and (self._wait_queue[0][1] or not self._acquire_stack):
+            if self._wait_queue and self._acquirable(*self._wait_queue[0]):
                 self._waiter.notify() 
                         
     def acquire(self, blocking=True, timeout=None, shared=False):
         me = current_thread().ident
         shared=shared is True
-        with self._wait_lock:
-            all_shared=True
-            for (thread, is_shared) in self._acquire_stack:
-                #the lock has been acquired
-                #in an exclusive state
-                #by another thread
-                if not is_shared and thread is not me:
-                    all_shared=False
-                    break
-                    
-            if all_shared:
+        with self._lock:                        
+            if self._acquirable(me, shared):
                 self._acquire_stack.insert(0, (me, shared))
                 return True
                 
@@ -475,16 +462,30 @@ locks will cause a deadlock. This restriction may go away in future.
             self._wait_queue.append((me, shared))
             if self._waiter.wait(timeout=timeout):
                 self._acquire_stack.insert(0, self._wait_queue.popleft())
-                if shared and self._wait_queue and self._wait_queue[0][1]:
+                if self._wait_queue and self._acquirable(*self._wait_queue[0]):
                     self._waiter.notify()
                 return True
                 
             self._wait_queue.remove((me, shared))
-            if self._wait_queue and self._wait_queue[0][1]:
+            if self._wait_queue and self._acquirable(*self._wait_queue[0]):
                 self._waiter.notify()
             return False
             
-
+    def _acquirable(self, me, shared):
+            all_shared=True
+            all_me=True
+            for (thread, is_shared) in self._acquire_stack:
+                #the lock has been acquired
+                #in an exclusive state
+                #by another thread
+                if thread is not me:
+                    all_me=False
+                    if not is_shared:
+                        all_shared=False
+                        break
+            return all_shared and shared or all_me
+            
+            
 #  Utilities for handling CPU affinity
 
 class CPUSet(set):
