@@ -1,4 +1,4 @@
-from threading3 import SHLock
+from threading3 import SHLock, current_thread
 
 SPECIAL_READ_NAMES = set([ '__abs__', '__add__', '__and__', '__call__',
 '__cmp__', '__coerce__', '__contains__', '__div__', '__divmod__','__eq__',
@@ -20,27 +20,28 @@ class UnacquiredLock(Exception):
     pass
 
 def thread_safe(obj, lock, blocking=True, timeout=None):
-    class ThreadSafe():
+    class ThreadSafe(object):
         def __new__(cls):
-            def make_method(name, shared):
+            def make_method(attribute, shared):
                 def method(self, *args, **kw):
                     if not lock.acquire(shared=shared, blocking=blocking, timeout=timeout):
                         raise UnacquiredLock
+                    assert (current_thread(), shared) in lock._acquire_stack
                     try:
-                        retval = getattr(obj, name)(*args, **kw)
+                        retval = getattr(obj, attribute)(*args, **kw)
                     finally:
                         lock.release()
                     return retval
                 return method
         
             namespace = {}
-            for name in SPECIAL_READ_NAMES:
-                if hasattr(obj, name):
-                    namespace[name] = make_method(name, True)
+            for attribute in SPECIAL_READ_NAMES:
+                if hasattr(obj, attribute):
+                    namespace[attribute] = make_method(attribute, True)
                     
-            for name in SPECIAL_WRITE_NAMES:
-                if hasattr(obj, name):
-                    namespace[name] = make_method(name, False)
+            for attribute in SPECIAL_WRITE_NAMES:
+                if hasattr(obj, attribute):
+                    namespace[attribute] = make_method(attribute, False)
                     
             return object.__new__(type("%s(%s)" % (cls.__name__, type(obj).__name__), (cls,), namespace))
 
