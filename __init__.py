@@ -1,6 +1,6 @@
 """
 
-  threading2:  like the standard threading module, but awesomer.
+  threading3:  like the standard threading module, but awesomer.
 
 This module is designed as a drop-in replacement and extension for the default
 "threading" module.  It has two main objectives:
@@ -52,14 +52,14 @@ from threading import _active,_DummyThread
 #  Grab the best implementation we can use on this platform
 try:
     if sys.platform == "win32":
-        from threading2.t2_win32 import *
+        from threading3.t2_win32 import *
     else:
-        from threading2.t2_posix import *
+        from threading3.t2_posix import *
 except ImportError:
-    from threading2.t2_base import *
+    from threading3.t2_base import *
     del sys
 
-from threading2.thread_safe import thread_safe, UnacquiredLock
+from threading3.thread_safe import thread_safe, UnacquiredLock
 
 __all__ = ["active_count","Condition","current_thread",
            "currentThread","enumerate","Event","local","Lock","RLock",

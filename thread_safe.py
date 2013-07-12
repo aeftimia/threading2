@@ -1,4 +1,4 @@
-from threading2 import SHLock
+from threading3 import SHLock
 
 SPECIAL_NAMES = set([
         '__abs__', '__add__', '__and__', '__call__', '__cmp__', '__coerce__', 

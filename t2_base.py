@@ -1,18 +1,19 @@
-import threading2
+import threading3
 from threading import *
 from threading import _RLock, _allocate_lock
 
 import sys
-if sys.version_info < (3, 3):
-    from threading import _Condition, _Timer
-else:
-    from threading import Condition as _Condition
-    from threading import Timer as _Timer
-
 if sys.version_info < (3, 0):
     from Queue import deque
 else:
     from queue import deque
+if sys.version_info < (3, 3):
+    from threading import _Condition, _Timer, _get_ident
+else:
+    from threading import Condition as _Condition
+    from threading import Timer as _Timer
+    from threading import get_ident as _get_ident
+
 
 __all__ = ["active_count","Condition","current_thread",
            "enumerate","Event","local","Lock","RLock",
@@ -137,9 +138,14 @@ class Condition(_Condition):
     def __init__(self,lock=None):
         if lock is None:
             lock = self._LockClass()
-        super(Condition,self).__init__(lock)
+        
         if sys.version_info >= (3, 0):
-            self.__waiters=self._waiters
+            self._waiters_attr="_waiters"
+        else:
+            self._waiters_attr="__waiters"
+            self.__waiters=[]
+            
+        super(Condition,self).__init__(lock)
 
     #  This is essentially the same as the base version, but it returns
     #  True if the wait was successful and False if it timed out.
@@ -148,12 +154,12 @@ class Condition(_Condition):
             raise RuntimeError("cannot wait on un-aquired lock")
         waiter = self._WaiterLockClass()
         waiter.acquire()
-        self.__waiters.append(waiter)
+        getattr(self, self._waiters_attr).append(waiter)
         saved_state = self._release_save()
         try:
             if not waiter.acquire(timeout=timeout):
                 try:
-                    self.__waiters.remove(waiter)
+                    self.waiters().remove(waiter)
                 except ValueError:
                     pass
                 return False
@@ -162,27 +168,25 @@ class Condition(_Condition):
         finally:
             self._acquire_restore(saved_state)
 
-    #return list of bools to to indicate whether notify actually did anything
-    def notify(self, n=1):
+    def notify(self, n=1): 
+        
+        '''returns number of successful notifies'''
+        
         if not self._is_owned():
             raise RuntimeError("cannot notify on un-acquired lock")
-        __waiters = self._waiters
+        __waiters = getattr(self, self._waiters_attr)
         waiters = __waiters[:n]
-        retval=[]
         if not waiters:
-            if __debug__:
-                self._note("%s.notify(): no waiters", self)
-            return retval
-        self._note("%s.notify(): notifying %d waiter%s", self, n,
-                   n!=1 and "s" or "")
+            return 0
+        successes=0
         for waiter in waiters:
             waiter.release()
             try:
                 __waiters.remove(waiter)
-                retval.append(True)
+                successes+=1
             except ValueError:
-                retval.append(False)
-        return retval
+                pass
+        return successes
 
 class Semaphore(_ContextManagerMixin):
     """Re-implemented Semaphore class.
@@ -229,42 +233,6 @@ class BoundedSemaphore(Semaphore):
             raise ValueError("Semaphore released too many times")
         return super(BoundedSemaphore,self).release()
 
-
-class Event(object):
-    """Re-implemented Event class.
-
-    This is pretty much a direct clone of the Event class from the standard
-    threading module; the only difference is that it uses a custom Condition
-    class for easy extensibility.
-    """
-
-    _ConditionClass = Condition
-
-    def __init__(self):
-        super(Event,self).__init__()
-        self.__cond = self._ConditionClass()
-        self.__flag = False
-
-    def is_set(self):
-        return self.__flag
-    isSet = is_set
-
-    def set(self):
-        with self.__cond:
-            self.__flag = True
-            self.__cond.notify_all()
-
-    def clear(self):
-        with self.__cond:
-            self.__flag = False
-
-    def wait(self,timeout=None):
-        with self.__cond:
-            if self.__flag:
-                return True
-            return self.__cond.wait(timeout)
-
-
 class Timer(_Timer):
     """Re-implemented Timer class.
 
@@ -306,7 +274,7 @@ class Thread(Thread):
         if daemon is not None:
             self.daemon = daemon
         if group is None:
-            self.group = threading2.default_group
+            self.group = threading3.default_group
         else:
             self.group = group
         if priority is not None:
@@ -325,7 +293,7 @@ class Thread(Thread):
         This method "upgrades" a vanilla thread object to an instance of this
         extended class.  You might need to call this if you obtain a reference
         to a thread by some means other than (a) creating it, or (b) from the 
-        methods of the threading2 module.
+        methods of the threading3 module.
         """
         new_classes = []
         for new_cls in cls.__mro__:
@@ -348,7 +316,7 @@ class Thread(Thread):
         self.__priority = None
         self.__affinity = None
         if getattr(self,"group",None) is None:
-            self.group = threading2.default_group
+            self.group = threading3.default_group
 
     def join(self,timeout=None):
         super(Thread,self).join(timeout)
@@ -438,24 +406,31 @@ Currently attempting to upgrade or downgrade between shared and exclusive
 locks will cause a deadlock. This restriction may go away in future.
 """
 
-    _LockClass = Lock
-    _ConditionClass = Condition
-
     def __init__(self):
-        self._lock = self._LockClass()
+        self._wait_lock = Lock()
         self._acquire_stack=[]
-        self._waitlist_queue=deque()
-        # This is for recycling waiter objects.
-        self._free_waiters = []
+        self._waiter=Condition(self._wait_lock)
+        self._wait_queue=deque()
+
+    def __enter__(self):
+        return self
+        
+    def __call__(self, *args, **kw):
+        if self.acquire(*args, **kw):
+            return self
+        raise threading3.UnacquiredLock
+        
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.release()
+
 
     def release(self):
         """Release the lock."""
         # This decrements the appropriate lock counters, and if the lock
         # becomes free, it looks for a queued thread to hand it off to.
         # By doing the handoff here we ensure fairness.
-        me = current_thread()
-        with self._lock:
-            waiters=[]
+        me = current_thread().ident
+        with self._wait_lock:
             found_me=False
             all_shared=True
             index=0
@@ -466,61 +441,49 @@ locks will cause a deadlock. This restriction may go away in future.
                 if thread is me and not found_me:
                     self._acquire_stack.pop(index)
                     found_me=True
-                elif is_shared:
-                    all_shared=False
-                    index+=1
                 else:
+                    all_shared&=is_shared
                     index+=1
                     
             if not found_me:
                 raise RuntimeError("release() called on unheld lock")
-
-            if all_shared:
-                while self._waitlist_queue:
-                    (thread, waiter, shared)=self._waitlist_queue.popleft()
-                    if shared or not self._acquire_stack:
-                        if waiter.notify():
-                            self._acquire_stack.insert(0, (me, shared))
-                            self._return_waiter(waiter)
-                    else:
-                        #stop on exlusive lock
-                        #if the lock is now shared
-                        break
+             
+            if all_shared and self._wait_queue and (self._wait_queue[0][1] or not self._acquire_stack):
+                self._waiter.notify() 
                         
     def acquire(self, blocking=True, timeout=None, shared=False):
-        me = current_thread()
-        with self._lock:
+        me = current_thread().ident
+        shared=shared is True
+        with self._wait_lock:
             all_shared=True
             for (thread, is_shared) in self._acquire_stack:
                 #the lock has been acquired
                 #in an exclusive state
                 #by another thread
-                if is_shared is not True and thread is not me:
+                if not is_shared and thread is not me:
                     all_shared=False
                     break
+                    
             if all_shared:
                 self._acquire_stack.insert(0, (me, shared))
                 return True
-            elif not blocking:
+                
+            if not blocking:
                 return False
 
             #if it is blocking, use the waitlist
-            waiter = self._take_waiter()
-            self._waitlist.append((thread, waiter, shared))
-            if not waiter.wait(timeout=timeout):
-                self._waitlist.remove((thread, waiter, shared))
-                return False
-            return True
+            self._wait_queue.append((me, shared))
+            if self._waiter.wait(timeout=timeout):
+                self._acquire_stack.insert(0, self._wait_queue.popleft())
+                if shared and self._wait_queue and self._wait_queue[0][1]:
+                    self._waiter.notify()
+                return True
+                
+            self._wait_queue.remove((me, shared))
+            if self._wait_queue and self._wait_queue[0][1]:
+                self._waiter.notify()
+            return False
             
-    def _take_waiter(self):
-        try:
-            return self._free_waiters.pop()
-        except IndexError:
-            return self._ConditionClass(self._lock)
-
-    def _return_waiter(self,waiter):
-        self._free_waiters.append(waiter)
-
 
 #  Utilities for handling CPU affinity
 
