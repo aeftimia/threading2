@@ -68,7 +68,7 @@ def thread_safe(obj, lock, blocking=True, timeout=None):
             try:
                 retval = delattr(obj, attribute)
             finally:
-                locks.release()
+                lock.release()
             return retval
 
     return ThreadSafe()
