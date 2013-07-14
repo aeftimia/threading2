@@ -398,7 +398,7 @@ class Thread(Thread):
 
 
 class SHLock(object):
-    """Shareable lock class.
+    """Sharable lock class.
 
 This functions just like an RLock except that you can also request a
 "shared" lock mode. Shared locks can co-exist with other shared locks
@@ -408,7 +408,8 @@ Currently attempting to upgrade or downgrade between shared and exclusive
 locks will cause a deadlock. This restriction may go away in future.
 """
 
-    def __init__(self):
+    def __init__(self, upgradable=False):
+        self._upgradable=upgradable
         self._lock = threading.Lock()
         self._acquire_stack=deque()
         self._wait_queue=deque()
@@ -476,18 +477,23 @@ locks will cause a deadlock. This restriction may go away in future.
             self._wait_queue[0][1].notify() 
 
     def _acquirable(self, me, shared):
-            all_shared=True
-            all_me=True
-            for (thread, is_shared) in self._acquire_stack:
-                #the lock has been acquired
-                #in an exclusive state
-                #by another thread
-                if thread is not me:
-                    all_me=False
-                    if not is_shared:
-                        all_shared=False
-                        break
-            return all_shared and shared or all_me
+            all_shared = True
+            all_mine = True
+            if self._upgradable:
+                for (thread, is_shared) in self._acquire_stack:
+                    mine = thread is me
+                    all_mine &= mine
+                    all_shared &= is_shared or mine
+            else:
+                shared_mine = False
+                for (thread, is_shared) in self._acquire_stack:
+                    mine = thread is me
+                    all_mine &= mine
+                    all_shared &= is_shared or mine
+                    shared_mine |= mine and is_shared
+                if shared_mine:
+                    assert shared
+            return all_shared and shared or all_mine
             
     def _take_waiter(self):
         try:
