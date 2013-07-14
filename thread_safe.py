@@ -33,6 +33,7 @@ def thread_safe(obj, lock, blocking=True, timeout=None, read_methods=SPECIAL_REA
                     return retval
                 return method
             
+            namespace={}
             for method in read_methods:
                 if hasattr(obj, method):
                     namespace[method] = make_method(method, True)
