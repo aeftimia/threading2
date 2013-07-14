@@ -1,17 +1,17 @@
 from threading3 import SHLock, current_thread
 
-SPECIAL_READ_NAMES = set([ '__abs__', '__add__', '__and__', '__call__',
+SPECIAL_READ_METHODS = set([ '__abs__', '__add__', '__and__', '__call__',
 '__cmp__', '__coerce__', '__contains__', '__div__', '__divmod__','__eq__',
 '__float__', '__floordiv__', '__ge__', '__getitem__', '__getslice__', '__gt__',
 '__hash__', '__hex__','__int__', '__invert__', '__iter__', '__le__', '__len__',
 '__long__', '__lshift__', '__lt__', '__mod__', '__mul__', '__ne__', '__neg__',
-'__oct__', '__or__', '__pos__', '__pow__', '__radd__', '__rand__', '__rdiv__',
-'__rdivmod__', '__reduce__', '__reduce_ex__', '__repr__', '__reversed__',
-'__rfloorfiv__', '__rlshift__', '__rmod__', '__rmul__', '__ror__', '__rpow__',
-'__rrshift__', '__rshift__', '__rsub__', '__rtruediv__', '__rxor__', '__sub__',
-'__truediv__', '__xor__', 'next', ])
+'__next__','__oct__', '__or__', '__pos__', '__pow__', '__radd__', '__rand__',
+'__rdiv__', '__rdivmod__', '__reduce__', '__reduce_ex__', '__repr__',
+'__reversed__', '__rfloorfiv__', '__rlshift__', '__rmod__', '__rmul__',
+'__ror__', '__rpow__', '__rrshift__', '__rshift__', '__rsub__', '__rtruediv__',
+'__rxor__', '__sub__', '__truediv__', '__xor__', 'next'])
 
-SPECIAL_WRITE_NAMES = set([ '__delitem__', '__delslice__', '__iadd__',
+SPECIAL_WRITE_METHODS = set([ '__delitem__', '__delslice__', '__iadd__',
 '__iand__','__idiv__', '__idivmod__', '__ifloordiv__', '__ilshift__',
 '__imod__', '__imul__', '__setitem__', '__setslice__', '__ior__', '__ipow__',
 '__irshift__', '__isub__', '__itruediv__', '__ixor__', ])
@@ -19,29 +19,27 @@ SPECIAL_WRITE_NAMES = set([ '__delitem__', '__delslice__', '__iadd__',
 class UnacquiredLock(Exception):
     pass
 
-def thread_safe(obj, lock, blocking=True, timeout=None):
+def thread_safe(obj, lock, blocking=True, timeout=None, read_methods=SPECIAL_READ_METHODS, write_methods=SPECIAL_WRITE_METHODS):
     class ThreadSafe(object):
         def __new__(cls):
-            def make_method(attribute, shared):
+            def make_method(name, shared):
                 def method(self, *args, **kw):
                     if not lock.acquire(shared=shared, blocking=blocking, timeout=timeout):
                         raise UnacquiredLock
-                    assert (current_thread(), shared) in lock._acquire_stack
                     try:
-                        retval = getattr(obj, attribute)(*args, **kw)
+                        retval = getattr(obj, name)(*args, **kw)
                     finally:
                         lock.release()
                     return retval
                 return method
-        
-            namespace = {}
-            for attribute in SPECIAL_READ_NAMES:
-                if hasattr(obj, attribute):
-                    namespace[attribute] = make_method(attribute, True)
+            
+            for method in read_methods:
+                if hasattr(obj, method):
+                    namespace[method] = make_method(method, True)
                     
-            for attribute in SPECIAL_WRITE_NAMES:
-                if hasattr(obj, attribute):
-                    namespace[attribute] = make_method(attribute, False)
+            for method in write_methods:
+                if hasattr(obj, method):
+                    namespace[method] = make_method(method, False)
                     
             return object.__new__(type("%s(%s)" % (cls.__name__, type(obj).__name__), (cls,), namespace))
 

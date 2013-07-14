@@ -59,13 +59,14 @@ except ImportError:
     from threading3.t2_base import *
     del sys
 
-from threading3.thread_safe import thread_safe, UnacquiredLock
+from threading3.thread_safe import thread_safe, UnacquiredLock, SPECIAL_READ_METHODS, SPECIAL_WRITE_METHODS
 
 __all__ = ["active_count","Condition","current_thread",
            "currentThread","enumerate","Event","local","Lock","RLock",
            "Semaphore","BoundedSemaphore","Thread","ThreadGroup","Timer",
            "SHLock","setprofile","settrace","stack_size","group_local",
-           "CPUSet","system_affinity","process_affinity", "thread_safe", "UnacquiredLock"]
+           "CPUSet","system_affinity","process_affinity", "thread_safe", 
+           "SPECIAL_READ_METHODS", "SPECIAL_WRITE_METHODS", "UnacquiredLock"]
 
 
 class ThreadGroup(object):

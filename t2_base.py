@@ -398,18 +398,15 @@ class Thread(Thread):
 
 
 class SHLock(object):
-    """Sharable lock class.
+    """Sharble lock class.
 
 This functions just like an RLock except that you can also request a
 "shared" lock mode. Shared locks can co-exist with other shared locks
 but block exclusive locks. You might also know this as a read/write lock.
-
-Currently attempting to upgrade or downgrade between shared and exclusive
-locks will cause a deadlock. This restriction may go away in future.
 """
 
-    def __init__(self, upgradable=False):
-        self._upgradable=upgradable
+    def __init__(self, safe=True):
+        self._safe=safe
         self._lock = threading.Lock()
         self._acquire_stack=deque()
         self._wait_queue=deque()
@@ -425,19 +422,14 @@ locks will cause a deadlock. This restriction may go away in future.
         
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.release()
-
-
+        
     def release(self):
         """Release the lock."""
-        # This decrements the appropriate lock counters, and if the lock
-        # becomes free, it looks for a queued thread to hand it off to.
-        # By doing the handoff here we ensure fairness.
         me = current_thread()
         with self._lock:
             found_me=False
             for (index, (thread, _)) in enumerate_(self._acquire_stack):
-                #go through acquire_stack
-                #until we find the current thread
+                # go through acquire_stack until we find the current thread
                 if thread is me:
                     del self._acquire_stack[index]
                     found_me=True
@@ -479,12 +471,7 @@ locks will cause a deadlock. This restriction may go away in future.
     def _acquirable(self, me, shared):
             all_shared = True
             all_mine = True
-            if self._upgradable:
-                for (thread, is_shared) in self._acquire_stack:
-                    mine = thread is me
-                    all_mine &= mine
-                    all_shared &= is_shared or mine
-            else:
+            if self._safe:
                 shared_mine = False
                 for (thread, is_shared) in self._acquire_stack:
                     mine = thread is me
@@ -492,7 +479,12 @@ locks will cause a deadlock. This restriction may go away in future.
                     all_shared &= is_shared or mine
                     shared_mine |= mine and is_shared
                 if shared_mine:
-                    assert shared
+                    assert shared or all_mine
+            else:
+                for (thread, is_shared) in self._acquire_stack:
+                    mine = thread is me
+                    all_mine &= mine
+                    all_shared &= is_shared or mine
             return all_shared and shared or all_mine
             
     def _take_waiter(self):
