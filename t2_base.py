@@ -442,7 +442,6 @@ but block exclusive locks. You might also know this as a read/write lock.
                         
     def acquire(self, blocking=True, timeout=None, shared=False):
         me = current_thread()
-        shared=shared is True
         with self._lock:                        
             if self._acquirable(me, shared):
                 self._acquire_stack.appendleft((me, shared))
