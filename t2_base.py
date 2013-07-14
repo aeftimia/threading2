@@ -496,7 +496,7 @@ locks will cause a deadlock. This restriction may go away in future.
             return threading.Condition(self._lock)
 
     def _return_waiter(self, return_waiter):
-        for (index, ((_, _), waiter)) in enumerate_(self._wait_queue):
+        for (index, (_, waiter)) in enumerate_(self._wait_queue):
             if waiter is return_waiter:
                 del self._wait_queue[index]
                 self._waiters.add(waiter) 
