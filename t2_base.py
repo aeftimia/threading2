@@ -445,8 +445,7 @@ locks will cause a deadlock. This restriction may go away in future.
             if not found_me:
                 raise RuntimeError("release() called on unheld lock")
              
-            if self._wait_queue and self._acquirable(*self._wait_queue[0][0]):
-                self._wait_queue[0][1].notify() 
+            self._notify()
                         
     def acquire(self, blocking=True, timeout=None, shared=False):
         me = current_thread()
@@ -465,15 +464,17 @@ locks will cause a deadlock. This restriction may go away in future.
             if waiter.wait(timeout=timeout):
                 self._acquire_stack.appendleft((me, shared))
                 self._return_waiter(waiter)
-                if self._wait_queue and self._acquirable(*self._wait_queue[0][0]):
-                    self._wait_queue[0][1].notify()
+                self._notify()
                 return True
                 
-            self._wait_queue.remove(((me, shared), waiter))
-            if self._wait_queue and self._acquirable(*self._wait_queue[0][0]):
-                self._wait_queue[0][1].notify()
+            self._return_waiter(waiter)    
+            self._notify()
             return False
-            
+
+    def _notify(self):
+        if self._wait_queue and self._acquirable(*self._wait_queue[0][0]):
+            self._wait_queue[0][1].notify() 
+
     def _acquirable(self, me, shared):
             all_shared=True
             all_me=True
@@ -494,8 +495,12 @@ locks will cause a deadlock. This restriction may go away in future.
         except KeyError:
             return threading.Condition(self._lock)
 
-    def _return_waiter(self,waiter):
-        self._waiters.add(waiter)            
+    def _return_waiter(self, return_waiter):
+        for (index, ((_, _), waiter)) in enumerate_(self._wait_queue):
+            if waiter is return_waiter:
+                del self._wait_queue[index]
+                self._waiters.add(waiter) 
+                return
             
 #  Utilities for handling CPU affinity
 
