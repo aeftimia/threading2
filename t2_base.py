@@ -410,8 +410,7 @@ but block exclusive locks. You might also know this as a read/write lock.
         self._lock = threading.Lock()
         self._acquire_stack=deque()
         self._wait_queue=deque()
-        self._waiters=set()
-
+        
     def __enter__(self):
         return self
         
@@ -435,7 +434,7 @@ but block exclusive locks. You might also know this as a read/write lock.
             if not found_me:
                 raise RuntimeError("release() called on unheld lock")
             self._notify()
-                        
+            
     def acquire(self, shared=False, blocking=True, timeout=None):
         me = current_thread()
         with self._lock:                        
@@ -447,30 +446,32 @@ but block exclusive locks. You might also know this as a read/write lock.
             waiter = _allocate_lock()
             wait_queue_entry = ((me, shared), waiter)
             self._wait_queue.append(wait_queue_entry)
+            waiter.acquire()
             self._lock.release()
             if timeout is None:
                 waiter.acquire()
                 self._lock.acquire()
                 self._acquire_stack.appendleft((me, shared))
-                self._wait_queue.popleft()
                 self._notify()
                 return True
             elif waiter.acquire(True, timeout):
                 self._lock.acquire()
                 self._acquire_stack.appendleft((me, shared))
-                self._wait_queue.popleft()
                 self._notify()
                 return True
             else:
                 self._lock.acquire()
-                self._wait_queue.remove(wait_queue_entry)
+                try:
+                    self._wait_queue.remove(wait_queue_entry)
+                except ValueError:
+                    pass
                 self._notify()
                 return False
-
+                
     def _notify(self):
         if self._wait_queue and self._acquirable(*self._wait_queue[0][0]):
-            self._wait_queue[0][1].release() 
-
+            self._wait_queue.popleft()[1].release() 
+            
     def _acquirable(self, me, shared):
             all_shared = True
             all_mine = True
