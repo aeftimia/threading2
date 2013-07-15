@@ -424,48 +424,52 @@ but block exclusive locks. You might also know this as a read/write lock.
         self.release()
         
     def release(self):
-        """Release the lock."""
         me = current_thread()
         with self._lock:
             found_me=False
             for (index, (thread, _)) in enumerate_(self._acquire_stack):
-                # go through acquire_stack until we find the current thread
                 if thread is me:
                     del self._acquire_stack[index]
                     found_me=True
                     break
-                    
             if not found_me:
                 raise RuntimeError("release() called on unheld lock")
-             
             self._notify()
                         
-    def acquire(self, blocking=True, timeout=None, shared=False):
+    def acquire(self, shared=False, blocking=True, timeout=None):
         me = current_thread()
         with self._lock:                        
             if self._acquirable(me, shared):
                 self._acquire_stack.appendleft((me, shared))
                 return True
-                
             if not blocking:
                 return False
-
-            #if it is blocking, use the waitlist
-            waiter=self._take_waiter()
-            self._wait_queue.append(((me, shared), waiter))
-            if waiter.wait(timeout=timeout):
+            waiter = _allocate_lock()
+            wait_queue_entry = ((me, shared), waiter)
+            self._wait_queue.append(wait_queue_entry)
+            self._lock.release()
+            if timeout is None:
+                waiter.acquire()
+                self._lock.acquire()
                 self._acquire_stack.appendleft((me, shared))
-                self._return_waiter(waiter)
+                self._wait_queue.popleft()
                 self._notify()
                 return True
-                
-            self._return_waiter(waiter)    
-            self._notify()
-            return False
+            elif waiter.acquire(True, timeout):
+                self._lock.acquire()
+                self._acquire_stack.appendleft((me, shared))
+                self._wait_queue.popleft()
+                self._notify()
+                return True
+            else:
+                self._lock.acquire()
+                self._wait_queue.remove(wait_queue_entry)
+                self._notify()
+                return False
 
     def _notify(self):
         if self._wait_queue and self._acquirable(*self._wait_queue[0][0]):
-            self._wait_queue[0][1].notify() 
+            self._wait_queue[0][1].release() 
 
     def _acquirable(self, me, shared):
             all_shared = True
@@ -486,18 +490,6 @@ but block exclusive locks. You might also know this as a read/write lock.
                     all_shared &= is_shared or mine
             return all_shared and shared or all_mine
             
-    def _take_waiter(self):
-        try:
-            return self._waiters.pop()
-        except KeyError:
-            return threading.Condition(self._lock)
-
-    def _return_waiter(self, return_waiter):
-        for (index, (_, waiter)) in enumerate_(self._wait_queue):
-            if waiter is return_waiter:
-                del self._wait_queue[index]
-                self._waiters.add(waiter) 
-                return
             
 #  Utilities for handling CPU affinity
 
