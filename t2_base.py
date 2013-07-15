@@ -409,6 +409,86 @@ but block exclusive locks. You might also know this as a read/write lock.
         self._safe=safe
         self._lock = threading.Lock()
         self._acquire_stack=deque()
+        self._waiter=_allocate_lock()
+        self._waiter.acquire()
+        
+    def __enter__(self):
+        return self
+        
+    def __call__(self, *args, **kw):
+        if self.acquire(*args, **kw):
+            return self
+        raise threading3.UnacquiredLock
+        
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.release()
+        
+    def release(self):
+        me = current_thread()
+        with self._lock:
+            found_me=False
+            for (index, (thread, _)) in enumerate_(self._acquire_stack):
+                if thread is me:
+                    del self._acquire_stack[index]
+                    found_me=True
+                    break
+            if not found_me:
+                raise RuntimeError("release() called on unheld lock")
+            self._notify()
+            
+    def acquire(self, shared=False, blocking=True, timeout=None):
+        me = current_thread()
+        with self._lock:
+            if self._acquirable(me, shared):
+                self._acquire_stack.appendleft((me, shared))
+                self._notify()
+                return True
+            if not blocking:
+                return False
+            while not self._acquirable(me, shared):
+                self._lock.release()
+                self._waiter.acquire()
+                self._lock.acquire()
+            self._acquire_stack.appendleft((me, shared))
+            self._notify()
+            return True
+
+    def _notify(self):
+        self._waiter.acquire(False)
+        self._waiter.release()
+
+    def _acquirable(self, me, shared):
+            all_shared = True
+            all_mine = True
+            if self._safe:
+                shared_mine = False
+                for (thread, is_shared) in self._acquire_stack:
+                    mine = thread is me
+                    all_mine &= mine
+                    all_shared &= is_shared or mine
+                    shared_mine |= mine and is_shared
+                if shared_mine:
+                    assert shared or all_mine
+            else:
+                for (thread, is_shared) in self._acquire_stack:
+                    mine = thread is me
+                    all_mine &= mine
+                    all_shared &= is_shared or mine
+            return all_shared and shared or all_mine
+            
+            
+class SHLock2(object):
+    """Sharble lock class.
+
+This functions just like an RLock except that you can also request a
+"shared" lock mode. Shared locks can co-exist with other shared locks
+but block exclusive locks. You might also know this as a read/write lock.
+"""
+
+    def __init__(self, safe=True):
+        self._safe=safe
+        self._lock = threading.Lock()
+        self._acquire_stack=deque()
         self._wait_queue=deque()
         
     def __enter__(self):
@@ -467,7 +547,7 @@ but block exclusive locks. You might also know this as a read/write lock.
                     pass
                 self._notify()
                 return False
-                
+
     def _notify(self):
         if self._wait_queue and self._acquirable(*self._wait_queue[0][0]):
             self._wait_queue.popleft()[1].release() 
